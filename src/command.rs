@@ -50,6 +50,8 @@ pub struct WitOpts {
     #[arg(long, short = 'w')]
     pub world: Vec<String>,
 
+    /// If `true`, skip scanning the current Go module's dependencies for
+    /// `componentize-go.toml` files.
     #[arg(long)]
     pub ignore_toml_files: bool,
 
