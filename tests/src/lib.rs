@@ -31,65 +31,71 @@ mod tests {
     });
 
     // TODO: Once the patch is merged in Big Go, this needs to be removed.
-    async fn patched_go_path() -> PathBuf {
-        let test_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let root_manifest = test_manifest.parent().unwrap();
+    static PATCHED_GO_PATH: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
 
-        // Determine OS and architecture
-        let os = match std::env::consts::OS {
-            "macos" => "darwin",
-            "linux" => "linux",
-            "windows" => "windows",
-            bad_os => panic!("OS not supported: {bad_os}"),
-        };
+    async fn patched_go_path() -> &'static PathBuf {
+        PATCHED_GO_PATH
+            .get_or_init(|| async {
+                let test_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                let root_manifest = test_manifest.parent().unwrap();
 
-        // Map to Go's naming conventions
-        let arch = match std::env::consts::ARCH {
-            "aarch64" => "arm64",
-            "x86_64" => "amd64",
-            bad_arch => panic!("ARCH not supported: {bad_arch}"),
-        };
+                // Determine OS and architecture
+                let os = match std::env::consts::OS {
+                    "macos" => "darwin",
+                    "linux" => "linux",
+                    "windows" => "windows",
+                    bad_os => panic!("OS not supported: {bad_os}"),
+                };
 
-        let go_dir = format!("go-{os}-{arch}-bootstrap");
-        let go_path = root_manifest.join(&go_dir);
-        let go_bin = go_path.join("bin").join("go");
+                // Map to Go's naming conventions
+                let arch = match std::env::consts::ARCH {
+                    "aarch64" => "arm64",
+                    "x86_64" => "amd64",
+                    bad_arch => panic!("ARCH not supported: {bad_arch}"),
+                };
 
-        // Skip if already installed
-        if go_bin.exists() {
-            return go_bin;
-        }
+                let go_dir = format!("go-{os}-{arch}-bootstrap");
+                let go_path = root_manifest.join(&go_dir);
+                let go_bin = go_path.join("bin").join("go");
 
-        // Download the patched Go toolchain
-        let archive_name = format!("{go_dir}.tbz");
-        let archive_path = root_manifest.join(&archive_name);
-        let download_url = format!(
-            "https://github.com/dicej/go/releases/download/go1.25.5-wasi-on-idle/{archive_name}"
-        );
+                // Skip if already installed
+                if go_bin.exists() {
+                    return go_bin;
+                }
 
-        println!("Downloading patched Go from {download_url}");
-        let response = reqwest::get(&download_url)
+                // Download the patched Go toolchain
+                let archive_name = format!("{go_dir}.tbz");
+                let archive_path = root_manifest.join(&archive_name);
+                let download_url = format!(
+                    "https://github.com/dicej/go/releases/download/go1.25.5-wasi-on-idle/{archive_name}"
+                );
+
+                println!("Downloading patched Go from {download_url}");
+                let bytes = reqwest::get(&download_url)
+                    .await
+                    .expect("Failed to download patched Go")
+                    .bytes()
+                    .await
+                    .expect("Failed to read download");
+
+                std::fs::write(&archive_path, &bytes).expect("Failed to write archive");
+
+                // Extract the archive
+                println!("Extracting {} to {}", archive_name, root_manifest.display());
+                let tar_file =
+                    std::fs::File::open(&archive_path).expect("Failed to open archive");
+                let tar_decoder = bzip2::read::BzDecoder::new(tar_file);
+                let mut archive = tar::Archive::new(tar_decoder);
+                archive
+                    .unpack(root_manifest)
+                    .expect("Failed to extract archive");
+
+                // Clean up archive
+                std::fs::remove_file(&archive_path).ok();
+
+                go_bin
+            })
             .await
-            .expect("Failed to download patched Go");
-
-        std::fs::write(
-            &archive_path,
-            response.bytes().await.expect("Failed to read download"),
-        )
-        .expect("Failed to write archive");
-
-        // Extract the archive
-        println!("Extracting {} to {}", archive_name, root_manifest.display());
-        let tar_file = std::fs::File::open(&archive_path).expect("Failed to open archive");
-        let tar_decoder = bzip2::read::BzDecoder::new(tar_file);
-        let mut archive = tar::Archive::new(tar_decoder);
-        archive
-            .unpack(root_manifest)
-            .expect("Failed to extract archive");
-
-        // Clean up archive
-        std::fs::remove_file(&archive_path).ok();
-
-        go_bin
     }
 
     struct App {
@@ -458,11 +464,11 @@ mod tests {
         let mut app = App::new(
             &app_dir,
             &[&app_dir.join("wit")],
-            &["wasi:http/service"],
+            &["wasip3-example"],
             None,
             true,
         );
-        app.build_component(Some(&patched_go_path().await))
+        app.build_component(Some(patched_go_path().await))
             .expect("failed to build app");
         app.run_component("/hello", "Hello, world!")
             .await
@@ -484,7 +490,7 @@ mod tests {
             None,
             true,
         );
-        app.build_component(Some(&patched_go_path().await))
+        app.build_component(Some(patched_go_path().await))
             .expect("failed to build app");
         app.run_component("/hello", "Hello, world!")
             .await
